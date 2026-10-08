@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+audit.log
+rate_limits.json
+STOP
