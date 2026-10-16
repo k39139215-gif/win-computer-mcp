@@ -447,5 +447,517 @@ def write_text_file(path: str, content: str) -> str:
         return f"Error writing file: {e}"
 
 
+# -------------------------------------------------------------------------
+# Phase 3: Active Input & Window Management Tools
+# -------------------------------------------------------------------------
+
+import subprocess
+import pyautogui
+
+# Safe defaults for input automation
+pyautogui.FAILSAFE = True
+pyautogui.PAUSE = 0.05
+
+
+def _find_target_window(window_title: str):
+    """
+    Find target window by title or process name, ensure desktop attachment,
+    and return (pywinauto_window, real_process_name, target_rect_dict, hwnd).
+    """
+    guard.ensure_default_desktop()
+    d = Desktop(backend="uia")
+    target_lower = window_title.lower()
+
+    for w in d.windows():
+        try:
+            if not w.is_visible():
+                continue
+            t = w.window_text()
+            proc = _get_real_process_for_win(w)
+            if target_lower in t.lower() or target_lower in proc.lower():
+                hwnd = w.handle
+                if hwnd and ctypes.windll.user32.IsIconic(hwnd):
+                    ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    time.sleep(0.15)
+                r = w.rectangle()
+                if r.width() <= 0 or r.height() <= 0:
+                    continue
+                rect_dict = {
+                    "left": max(0, r.left),
+                    "top": max(0, r.top),
+                    "width": r.width(),
+                    "height": r.height(),
+                }
+                return w, proc, rect_dict, hwnd
+        except Exception:
+            continue
+    return None, "unknown", {}, 0
+
+
+def _focus_hwnd(hwnd: int) -> bool:
+    """Bring window to foreground safely."""
+    if not hwnd or sys.platform != "win32":
+        return False
+    guard.ensure_default_desktop()
+    user32 = ctypes.windll.user32
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)
+        time.sleep(0.1)
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.1)
+    return True
+
+
+def _launch_executable(exe_name: str) -> int:
+    """Launch an allowed executable on the interactive desktop, activating packaged UWP aliases."""
+    if sys.platform == "win32":
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            import win32com.client
+            shell = win32com.client.Dispatch("Shell.Application")
+            shell.ShellExecute(exe_name, "", "", "open", 1)
+            return 0
+        except Exception:
+            pass
+        try:
+            ret = ctypes.windll.shell32.ShellExecuteW(None, "open", exe_name, None, None, 1)
+            if ret > 32:
+                return 0
+        except Exception:
+            pass
+    proc = subprocess.Popen([exe_name], shell=False)
+    return proc.pid
+
+
+@mcp.tool()
+def launch_app(app_name: str) -> Dict[str, Any]:
+    """
+    Launch an allowed Windows application (e.g., 'notepad', 'calc').
+    SECURITY POLICY (Allowlist): Only applications explicitly in config.allowed_apps
+    can be launched. Rejects arbitrary commands, scripts, or blocked applications.
+    
+    Args:
+        app_name: Name of the application to launch (e.g. 'notepad', 'calc').
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        guard.log_audit("launch_app", {"app_name": app_name}, "denied", kill_reason)
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        guard.log_audit("launch_app", {"app_name": app_name}, "denied", rate_reason)
+        return {"error": f"Action denied: {rate_reason}"}
+
+    allowed, reason, exe_name = guard.validate_app_launch(app_name)
+    if not allowed:
+        guard.log_audit("launch_app", {"app_name": app_name}, "denied", reason)
+        return {"error": f"Security rejection: {reason}"}
+
+    guard.ensure_default_desktop()
+    try:
+        pid = _launch_executable(exe_name)
+        time.sleep(1.0)  # Allow UI window to register
+
+        guard.log_audit("launch_app", {"app_name": app_name, "exe": exe_name, "pid": pid}, "success")
+        return {"status": "success", "app_name": exe_name, "pid": pid}
+    except Exception as e:
+        guard.log_audit("launch_app", {"app_name": app_name}, "error", str(e))
+        return {"error": f"Failed to launch '{app_name}': {e}"}
+
+
+@mcp.tool()
+def focus_window(window_title: str) -> Dict[str, Any]:
+    """
+    Bring an allowed target application window to the foreground.
+    
+    Args:
+        window_title: Title or owning process name of target window.
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        guard.log_audit("focus_window", {"window_title": window_title}, "denied", kill_reason)
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        guard.log_audit("focus_window", {"window_title": window_title}, "denied", rate_reason)
+        return {"error": f"Action denied: {rate_reason}"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        msg = f"Target window '{window_title}' not found or not visible"
+        guard.log_audit("focus_window", {"window_title": window_title}, "error", msg)
+        return {"error": msg}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        guard.log_audit("focus_window", {"window_title": window_title, "process": proc_name}, "denied", reason)
+        return {"error": f"Security rejection: Cannot focus window ({reason})"}
+
+    _focus_hwnd(hwnd)
+    guard.log_audit("focus_window", {"window_title": window_title, "process": proc_name, "hwnd": hwnd}, "success")
+    return {"status": "success", "window_title": win.window_text(), "process": proc_name, "hwnd": hwnd}
+
+
+@mcp.tool()
+def mouse_click(
+    window_title: str,
+    x: int,
+    y: int,
+    button: str = "left",
+    clicks: int = 1,
+    scaled: bool = True
+) -> Dict[str, Any]:
+    """
+    Click at (x, y) inside an allowed application window.
+    SECURITY POLICY (Boundary & Scope Enforcement):
+    - Rejects clicks if target window belongs to a blocked/non-allowed app.
+    - Clamps coordinates strictly within window boundaries (cannot click outside or on other apps).
+    - Verifies via WindowFromPoint that the target point is not obscured by another window.
+    
+    Args:
+        window_title: Title or process name of target allowed window.
+        x: X-coordinate (within window screenshot).
+        y: Y-coordinate (within window screenshot).
+        button: Mouse button ('left', 'right', 'middle'). Default 'left'.
+        clicks: Number of clicks (1 for single, 2 for double click).
+        scaled: True if (x, y) comes from the 1280px downscaled screenshot (default True).
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        guard.log_audit("mouse_click", {"window_title": window_title, "x": x, "y": y}, "denied", kill_reason)
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        guard.log_audit("mouse_click", {"window_title": window_title, "x": x, "y": y}, "denied", rate_reason)
+        return {"error": f"Action denied: {rate_reason}"}
+
+    btn = button.lower()
+    if btn not in ("left", "right", "middle"):
+        return {"error": f"Invalid mouse button: '{button}'"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        msg = f"Target window '{window_title}' not found or not visible"
+        guard.log_audit("mouse_click", {"window_title": window_title}, "error", msg)
+        return {"error": msg}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        guard.log_audit("mouse_click", {"window_title": window_title, "process": proc_name}, "denied", reason)
+        return {"error": f"Security rejection: Cannot click window ({reason})"}
+
+    longest = max(rect["width"], rect["height"])
+    scale_factor = round(1280.0 / float(longest), 6) if longest > 1280 else 1.0
+
+    valid_coords, coord_err, abs_x, abs_y = guard.validate_click_coordinates(
+        rect, x, y, scaled=scaled, scale_factor=scale_factor
+    )
+    if not valid_coords:
+        guard.log_audit("mouse_click", {"window_title": window_title, "x": x, "y": y}, "denied", coord_err)
+        return {"error": f"Security rejection: {coord_err}"}
+
+    _focus_hwnd(hwnd)
+
+    point_ok, point_err = guard.verify_point_in_target_window(hwnd, abs_x, abs_y)
+    if not point_ok:
+        guard.log_audit("mouse_click", {"window_title": window_title, "abs_x": abs_x, "abs_y": abs_y}, "denied", point_err)
+        return {"error": f"Security rejection: {point_err}"}
+
+    try:
+        pyautogui.click(x=abs_x, y=abs_y, button=btn, clicks=clicks, interval=0.1)
+        guard.log_audit(
+            "mouse_click",
+            {"window_title": window_title, "x": x, "y": y, "abs_x": abs_x, "abs_y": abs_y, "button": btn, "clicks": clicks},
+            "success"
+        )
+        return {"status": "success", "abs_x": abs_x, "abs_y": abs_y, "button": btn, "clicks": clicks}
+    except Exception as e:
+        guard.log_audit("mouse_click", {"window_title": window_title, "x": x, "y": y}, "error", str(e))
+        return {"error": f"Mouse click failed: {e}"}
+
+
+@mcp.tool()
+def mouse_move(
+    window_title: str,
+    x: int,
+    y: int,
+    scaled: bool = True
+) -> Dict[str, Any]:
+    """
+    Move the mouse cursor to (x, y) inside an allowed application window.
+    
+    Args:
+        window_title: Title or process name of target allowed window.
+        x: X-coordinate.
+        y: Y-coordinate.
+        scaled: True if coordinates match downscaled screenshot (default True).
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        return {"error": f"Action denied: {rate_reason}"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        return {"error": f"Target window '{window_title}' not found"}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        return {"error": f"Security rejection: {reason}"}
+
+    longest = max(rect["width"], rect["height"])
+    scale_factor = round(1280.0 / float(longest), 6) if longest > 1280 else 1.0
+
+    valid_coords, coord_err, abs_x, abs_y = guard.validate_click_coordinates(
+        rect, x, y, scaled=scaled, scale_factor=scale_factor
+    )
+    if not valid_coords:
+        return {"error": f"Security rejection: {coord_err}"}
+
+    _focus_hwnd(hwnd)
+    pyautogui.moveTo(abs_x, abs_y, duration=0.1)
+    guard.log_audit("mouse_move", {"window_title": window_title, "abs_x": abs_x, "abs_y": abs_y}, "success")
+    return {"status": "success", "abs_x": abs_x, "abs_y": abs_y}
+
+
+@mcp.tool()
+def mouse_drag(
+    window_title: str,
+    start_x: int,
+    start_y: int,
+    end_x: int,
+    end_y: int,
+    button: str = "left",
+    scaled: bool = True
+) -> Dict[str, Any]:
+    """
+    Click and drag from (start_x, start_y) to (end_x, end_y) inside an allowed window.
+    Both start and end points must remain within target window boundaries.
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        return {"error": f"Action denied: {rate_reason}"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        return {"error": f"Target window '{window_title}' not found"}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        return {"error": f"Security rejection: {reason}"}
+
+    longest = max(rect["width"], rect["height"])
+    scale_factor = round(1280.0 / float(longest), 6) if longest > 1280 else 1.0
+
+    v1, e1, s_abs_x, s_abs_y = guard.validate_click_coordinates(rect, start_x, start_y, scaled=scaled, scale_factor=scale_factor)
+    if not v1:
+        return {"error": f"Security rejection (start point): {e1}"}
+
+    v2, e2, e_abs_x, e_abs_y = guard.validate_click_coordinates(rect, end_x, end_y, scaled=scaled, scale_factor=scale_factor)
+    if not v2:
+        return {"error": f"Security rejection (end point): {e2}"}
+
+    _focus_hwnd(hwnd)
+    pyautogui.moveTo(s_abs_x, s_abs_y)
+    pyautogui.dragTo(e_abs_x, e_abs_y, button=button.lower(), duration=0.3)
+    guard.log_audit("mouse_drag", {"window_title": window_title, "start": [s_abs_x, s_abs_y], "end": [e_abs_x, e_abs_y]}, "success")
+    return {"status": "success", "start": [s_abs_x, s_abs_y], "end": [e_abs_x, e_abs_y]}
+
+
+@mcp.tool()
+def mouse_scroll(
+    window_title: str,
+    x: int,
+    y: int,
+    clicks: int,
+    scaled: bool = True
+) -> Dict[str, Any]:
+    """
+    Scroll vertical mouse wheel at (x, y) inside an allowed window.
+    Positive clicks scroll UP, negative clicks scroll DOWN.
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        return {"error": f"Action denied: {rate_reason}"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        return {"error": f"Target window '{window_title}' not found"}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        return {"error": f"Security rejection: {reason}"}
+
+    longest = max(rect["width"], rect["height"])
+    scale_factor = round(1280.0 / float(longest), 6) if longest > 1280 else 1.0
+
+    valid_coords, coord_err, abs_x, abs_y = guard.validate_click_coordinates(
+        rect, x, y, scaled=scaled, scale_factor=scale_factor
+    )
+    if not valid_coords:
+        return {"error": f"Security rejection: {coord_err}"}
+
+    _focus_hwnd(hwnd)
+    pyautogui.moveTo(abs_x, abs_y)
+    pyautogui.scroll(clicks)
+    guard.log_audit("mouse_scroll", {"window_title": window_title, "abs_x": abs_x, "abs_y": abs_y, "clicks": clicks}, "success")
+    return {"status": "success", "abs_x": abs_x, "abs_y": abs_y, "clicks": clicks}
+
+
+@mcp.tool()
+def type_text(window_title: str, text: str) -> Dict[str, Any]:
+    """
+    Type text into the currently focused control of an allowed application window.
+    SECURITY POLICY (Password Shielding):
+    - Refuses to type if target window is not an allowed application.
+    - Inspects active focused control; if it is a password field (is_password_control),
+      typing is strictly blocked to prevent credential exposure.
+    - Audit logs are automatically sanitized to prevent secret leaks.
+    
+    Args:
+        window_title: Title or process name of target window.
+        text: Text string to type.
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        guard.log_audit("type_text", {"window_title": window_title}, "denied", kill_reason)
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        guard.log_audit("type_text", {"window_title": window_title}, "denied", rate_reason)
+        return {"error": f"Action denied: {rate_reason}"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        msg = f"Target window '{window_title}' not found or not visible"
+        guard.log_audit("type_text", {"window_title": window_title}, "error", msg)
+        return {"error": msg}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        guard.log_audit("type_text", {"window_title": window_title, "process": proc_name}, "denied", reason)
+        return {"error": f"Security rejection: Cannot type into window ({reason})"}
+
+    _focus_hwnd(hwnd)
+
+    try:
+        focused = win.get_focus()
+        if focused and guard.is_password_control(focused):
+            msg = "Security rejection: Active focused element is a password field. Typing is strictly blocked."
+            guard.log_audit("type_text", {"window_title": window_title}, "denied", msg)
+            return {"error": msg}
+    except Exception:
+        pass
+
+    try:
+        pyautogui.write(text, interval=0.01)
+        guard.log_audit(
+            "type_text",
+            {"window_title": window_title, "chars_count": len(text)},
+            "success"
+        )
+        return {"status": "success", "typed_characters": len(text)}
+    except Exception as e:
+        guard.log_audit("type_text", {"window_title": window_title}, "error", str(e))
+        return {"error": f"Type text error: {e}"}
+
+
+@mcp.tool()
+def press_key(window_title: str, key: str) -> Dict[str, Any]:
+    """
+    Press a single key (e.g. 'enter', 'tab', 'esc', 'backspace', 'delete', 'space', 'up', 'down').
+    SECURITY POLICY: Rejects forbidden system keys (e.g. Windows key).
+    
+    Args:
+        window_title: Title or process name of target allowed window.
+        key: Key name (e.g. 'enter', 'tab', 'escape').
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        return {"error": f"Action denied: {rate_reason}"}
+
+    clean_key = (key or "").strip().lower()
+    if clean_key in guard.FORBIDDEN_KEY_NAMES:
+        return {"error": f"Security rejection: Key '{key}' is forbidden"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        return {"error": f"Target window '{window_title}' not found"}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        return {"error": f"Security rejection: {reason}"}
+
+    _focus_hwnd(hwnd)
+    pyautogui.press(clean_key)
+    guard.log_audit("press_key", {"window_title": window_title, "key": clean_key}, "success")
+    return {"status": "success", "key": clean_key}
+
+
+@mcp.tool()
+def hotkey(window_title: str, keys: str) -> Dict[str, Any]:
+    """
+    Trigger a safe key combination (e.g. 'ctrl+c', 'ctrl+v', 'ctrl+a', 'ctrl+s', 'ctrl+z').
+    SECURITY POLICY: Strictly forbids Windows key combinations (Win+R, etc.),
+    system interrupt shortcuts (Ctrl+Alt+Del, Alt+F4, Ctrl+Shift+Esc),
+    and simulating the emergency kill switch.
+    
+    Args:
+        window_title: Title or process name of target allowed window.
+        keys: Key combination joined by '+' (e.g. 'ctrl+a', 'ctrl+v').
+    """
+    killed, kill_reason = guard.is_kill_switch_active()
+    if killed:
+        guard.log_audit("hotkey", {"window_title": window_title, "keys": keys}, "denied", kill_reason)
+        return {"error": f"Action denied: {kill_reason}"}
+
+    rate_ok, rate_reason = guard.check_rate_limit()
+    if not rate_ok:
+        guard.log_audit("hotkey", {"window_title": window_title, "keys": keys}, "denied", rate_reason)
+        return {"error": f"Action denied: {rate_reason}"}
+
+    ok, reason, key_list = guard.validate_hotkey(keys)
+    if not ok:
+        guard.log_audit("hotkey", {"window_title": window_title, "keys": keys}, "denied", reason)
+        return {"error": f"Security rejection: {reason}"}
+
+    win, proc_name, rect, hwnd = _find_target_window(window_title)
+    if not win:
+        msg = f"Target window '{window_title}' not found or not visible"
+        guard.log_audit("hotkey", {"window_title": window_title, "keys": keys}, "error", msg)
+        return {"error": msg}
+
+    allowed, reason = guard.is_app_allowed(proc_name)
+    if not allowed:
+        guard.log_audit("hotkey", {"window_title": window_title, "process": proc_name}, "denied", reason)
+        return {"error": f"Security rejection: Cannot send hotkey ({reason})"}
+
+    _focus_hwnd(hwnd)
+    pyautogui.hotkey(*key_list)
+    guard.log_audit("hotkey", {"window_title": window_title, "keys": key_list}, "success")
+    return {"status": "success", "hotkey": "+".join(key_list)}
+
+
 if __name__ == "__main__":
     mcp.run()
+

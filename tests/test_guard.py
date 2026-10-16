@@ -435,3 +435,132 @@ def test_file_dialog_detection():
         with patch("win32gui.GetWindowText", return_value="Untitled - Notepad"):
             assert guard.is_file_dialog_window(mock_hwnd) is False
 
+
+# -------------------------------------------------------------------------
+# Phase 3: Active Input Safety Tests
+# -------------------------------------------------------------------------
+
+def test_validate_app_launch_allowed():
+    """Verify allowed apps pass validation regardless of extension or casing."""
+    ok, _, exe = guard.validate_app_launch("notepad")
+    assert ok is True
+    assert exe == "notepad.exe"
+
+    ok, _, exe = guard.validate_app_launch("Notepad.exe")
+    assert ok is True
+    assert exe == "notepad.exe"
+
+    ok, _, exe = guard.validate_app_launch("calc")
+    assert ok is True
+    assert exe == "calc.exe"
+
+    ok, _, exe = guard.validate_app_launch("calculatorapp.exe")
+    assert ok is True
+    assert exe == "calculatorapp.exe"
+
+
+def test_validate_app_launch_forbidden():
+    """Verify non-allowed or dangerous apps are strictly rejected."""
+    ok, reason, _ = guard.validate_app_launch("chrome.exe")
+    assert ok is False
+    assert "not in allowed_apps" in reason
+
+    ok, reason, _ = guard.validate_app_launch("cmd.exe")
+    assert ok is False
+
+    ok, reason, _ = guard.validate_app_launch("powershell.exe")
+    assert ok is False
+
+    ok, reason, _ = guard.validate_app_launch("C:\\Windows\\System32\\cmd.exe")
+    assert ok is False
+
+    ok, reason, _ = guard.validate_app_launch("script.bat")
+    assert ok is False
+
+    ok, reason, _ = guard.validate_app_launch("")
+    assert ok is False
+
+
+def test_validate_hotkey_safe():
+    """Verify standard editing hotkeys and navigation keys pass."""
+    ok, _, keys = guard.validate_hotkey("ctrl+c")
+    assert ok is True
+    assert keys == ["ctrl", "c"]
+
+    ok, _, keys = guard.validate_hotkey("Ctrl + V")
+    assert ok is True
+    assert keys == ["ctrl", "v"]
+
+    ok, _, keys = guard.validate_hotkey("ctrl+shift+left")
+    assert ok is True
+
+    ok, _, keys = guard.validate_hotkey("enter")
+    assert ok is True
+
+    ok, _, keys = guard.validate_hotkey("escape")
+    assert ok is True
+
+
+def test_validate_hotkey_forbidden_combos():
+    """Verify dangerous system shortcuts and Windows key combos are strictly blocked."""
+    # Windows key combos
+    ok, reason, _ = guard.validate_hotkey("win+r")
+    assert ok is False
+    assert "forbidden" in reason
+
+    ok, reason, _ = guard.validate_hotkey("win+x")
+    assert ok is False
+
+    ok, reason, _ = guard.validate_hotkey("win")
+    assert ok is False
+
+    ok, reason, _ = guard.validate_hotkey("ctrl+alt+del")
+    assert ok is False
+    assert "Ctrl+Alt+Del" in reason
+
+    ok, reason, _ = guard.validate_hotkey("alt+f4")
+    assert ok is False
+    assert "Alt+F4" in reason
+
+    ok, reason, _ = guard.validate_hotkey("ctrl+shift+esc")
+    assert ok is False
+    assert "Task Manager" in reason
+
+    # Emergency kill switch simulation
+    ok, reason, _ = guard.validate_hotkey("ctrl+alt+shift+k")
+    assert ok is False
+    assert "emergency kill switch" in reason
+
+
+def test_validate_click_coordinates_bounds():
+    """Verify coordinate translation, scaling, and boundary checks."""
+    rect = {"left": 100, "top": 200, "width": 800, "height": 600}
+
+    # Within bounds (unscaled)
+    ok, _, abs_x, abs_y = guard.validate_click_coordinates(rect, 50, 100, scaled=False)
+    assert ok is True
+    assert abs_x == 150
+    assert abs_y == 300
+
+    # Within bounds (scaled with scale_factor=0.5: 25 -> 50 orig)
+    ok, _, abs_x, abs_y = guard.validate_click_coordinates(rect, 25, 50, scaled=True, scale_factor=0.5)
+    assert ok is True
+    assert abs_x == 150
+    assert abs_y == 300
+
+    # Outside bounds: X > width
+    ok, reason, _, _ = guard.validate_click_coordinates(rect, 850, 100, scaled=False)
+    assert ok is False
+    assert "outside target window boundaries" in reason
+
+    # Outside bounds: negative X
+    ok, reason, _, _ = guard.validate_click_coordinates(rect, -5, 100, scaled=False)
+    assert ok is False
+    assert "outside target window boundaries" in reason
+
+    # Outside bounds: Y > height
+    ok, reason, _, _ = guard.validate_click_coordinates(rect, 100, 650, scaled=False)
+    assert ok is False
+    assert "outside target window boundaries" in reason
+
+

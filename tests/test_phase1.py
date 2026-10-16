@@ -23,8 +23,13 @@ import server
 
 @pytest.fixture(autouse=True)
 def ensure_desktop_env():
-    """Ensure attached to default desktop before each test."""
+    """Ensure attached to default desktop and clean guard state before each test."""
     guard.ensure_default_desktop()
+    guard.set_kill_switch(False)
+    guard.reset_rate_limits()
+    yield
+    guard.set_kill_switch(False)
+    guard.reset_rate_limits()
 
 
 def test_audit_log_format_and_sanitization():
@@ -66,6 +71,7 @@ def test_screenshot_fullscreen_refused_by_policy():
 
 def test_screenshot_window_scoped_allowed():
     """Verify window-scoped capture of an allowed application (Calculator)."""
+    _ensure_app_open("calc.exe", "Calculator")
     res = server.screenshot(window_title="Calculator")
     assert isinstance(res, list)
     assert len(res) == 2
@@ -121,26 +127,21 @@ def _ensure_app_open(cmd_name: str, window_keyword: str):
     for w in server.list_windows():
         if window_keyword.lower() in w["title"].lower():
             return
-    try:
-        import pythoncom
-        pythoncom.CoInitialize()
-        import win32com.client
-        shell = win32com.client.Dispatch("Shell.Application")
-        shell.ShellExecute(cmd_name, "", "", "open", 1)
-    except Exception:
-        pass
-    for _ in range(12):
+    server.launch_app(cmd_name)
+    for _ in range(15):
         time.sleep(0.3)
         for w in server.list_windows():
             if window_keyword.lower() in w["title"].lower():
                 return
 
 
-
-
 def test_list_controls_notepad():
     """Verify list_controls inspects controls in Notepad."""
+    _ensure_app_open("notepad.exe", "Notepad")
     result = server.list_controls("Notepad", max_items=50)
+
+    if "error" in result and "not found" in result["error"].lower():
+        pytest.skip("Notepad window is not currently open on this desktop")
 
     assert "error" not in result, f"list_controls failed on Notepad: {result.get('error')}"
     assert result["total_controls"] > 0

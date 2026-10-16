@@ -558,3 +558,165 @@ def log_audit(
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         sys.stderr.write(f"Audit log write failed: {e}\n")
+
+
+# -------------------------------------------------------------------------
+# Phase 3: Active Input Safety Validations
+# -------------------------------------------------------------------------
+
+FORBIDDEN_KEY_NAMES = {
+    "win", "windows", "lwin", "rwin", "winleft", "winright", "pause"
+}
+
+
+def validate_app_launch(app_name: str) -> Tuple[bool, str, str]:
+    """
+    Validate that an application requested to be launched is in allowed_apps.
+    Rejects arbitrary commands, scripts, or path traversal.
+    Returns (is_allowed, reason, normalized_executable_name).
+    """
+    config = load_config()
+    allowed_apps = config.get("allowed_apps", [])
+    if not allowed_apps:
+        return False, "Fail-closed: No allowed_apps configured", ""
+
+    clean = (app_name or "").strip().lower()
+    if not clean:
+        return False, "Fail-closed: Empty application name provided", ""
+
+    base = os.path.basename(clean)
+    candidate_names = [base]
+    if not base.endswith(".exe"):
+        candidate_names.append(f"{base}.exe")
+
+    for cand in candidate_names:
+        if cand in allowed_apps:
+            return True, "", cand
+
+    return False, f"Access denied: Application '{app_name}' is not in allowed_apps: {allowed_apps}", ""
+
+
+def validate_hotkey(keys: str | List[str]) -> Tuple[bool, str, List[str]]:
+    """
+    Validate a keyboard hotkey combination.
+    Strictly forbids Windows key combos (Win+R, Win+X, etc.),
+    system interrupt shortcuts (Ctrl+Alt+Del, Alt+F4, Ctrl+Shift+Esc),
+    and our internal emergency kill switch (Ctrl+Alt+Shift+K).
+    Returns (is_allowed, reason, normalized_key_list).
+    """
+    if isinstance(keys, str):
+        # Split by + or comma
+        raw_list = [k.strip().lower() for k in keys.replace(",", "+").split("+") if k.strip()]
+    else:
+        raw_list = [str(k).strip().lower() for k in keys if str(k).strip()]
+
+    if not raw_list:
+        return False, "Fail-closed: Empty hotkey combination", []
+
+    # 1. Reject any Windows key combo
+    for k in raw_list:
+        if k in FORBIDDEN_KEY_NAMES:
+            return False, f"Security rejection: Windows key combinations are forbidden: '{keys}'", []
+
+    key_set = set(raw_list)
+
+    # 2. Reject Alt+F4 window termination
+    if "alt" in key_set and "f4" in key_set:
+        return False, f"Security rejection: Alt+F4 window termination is forbidden via automated hotkey", []
+
+    # 3. Reject Ctrl+Alt+Del
+    if "ctrl" in key_set and "alt" in key_set and any(d in key_set for d in ("del", "delete")):
+        return False, f"Security rejection: Ctrl+Alt+Del system hotkey is strictly forbidden", []
+
+    # 4. Reject Ctrl+Shift+Esc (Task Manager)
+    if "ctrl" in key_set and "shift" in key_set and any(e in key_set for e in ("esc", "escape")):
+        return False, f"Security rejection: Ctrl+Shift+Esc Task Manager launch is forbidden", []
+
+    # 5. Reject simulating our emergency kill switch hotkey
+    if "ctrl" in key_set and "alt" in key_set and "shift" in key_set and "k" in key_set:
+        return False, f"Security rejection: Cannot simulate emergency kill switch hotkey", []
+
+    return True, "", raw_list
+
+
+def validate_click_coordinates(
+    window_rect: Dict[str, int],
+    x: int,
+    y: int,
+    scaled: bool = True,
+    scale_factor: float = 1.0,
+) -> Tuple[bool, str, int, int]:
+    """
+    Translate and validate click coordinates against the target window bounding box.
+    If scaled=True, translates from the downscaled LLM image back to original window coordinates.
+    Guarantees coordinates cannot escape the target window boundaries.
+    Returns (is_valid, reason, abs_screen_x, abs_screen_y).
+    """
+    sf = scale_factor if scale_factor > 0 else 1.0
+    if scaled:
+        orig_x = int(round(x / sf))
+        orig_y = int(round(y / sf))
+    else:
+        orig_x = int(x)
+        orig_y = int(y)
+
+    w = window_rect.get("width", 0)
+    h = window_rect.get("height", 0)
+
+    # Boundary clamp check
+    if orig_x < 0 or orig_x > w or orig_y < 0 or orig_y > h:
+        return (
+            False,
+            f"Coordinate ({x}, {y}) [mapped to ({orig_x}, {orig_y})] is outside target window boundaries ({w}x{h})",
+            0,
+            0,
+        )
+
+    abs_x = window_rect.get("left", 0) + orig_x
+    abs_y = window_rect.get("top", 0) + orig_y
+
+    return True, "", abs_x, abs_y
+
+
+def verify_point_in_target_window(target_hwnd: int, abs_x: int, abs_y: int) -> Tuple[bool, str]:
+    """
+    Verify using Win32 WindowFromPoint that the screen point at (abs_x, abs_y)
+    is owned by target_hwnd or one of its child controls.
+    Prevents clicking through or clicking on overlapping taskbars/notifications.
+    """
+    if sys.platform != "win32":
+        return True, ""
+    try:
+        ensure_default_desktop()
+        user32 = ctypes.windll.user32
+        pt = wintypes.POINT(abs_x, abs_y)
+        hit_hwnd = user32.WindowFromPoint(pt)
+
+        if not hit_hwnd:
+            return False, f"No window detected at screen point ({abs_x}, {abs_y})"
+
+        if hit_hwnd == target_hwnd:
+            return True, ""
+
+        # Check if hit_hwnd is a child or shares root ancestor
+        GA_ROOT = 2
+        root_hit = user32.GetAncestor(hit_hwnd, GA_ROOT)
+        root_target = user32.GetAncestor(target_hwnd, GA_ROOT)
+
+        if root_hit == target_hwnd or root_hit == root_target or user32.IsChild(target_hwnd, hit_hwnd):
+            return True, ""
+
+        # Check if both windows share the same process ID
+        pid_target = wintypes.DWORD()
+        pid_hit = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(target_hwnd, ctypes.byref(pid_target))
+        user32.GetWindowThreadProcessId(hit_hwnd, ctypes.byref(pid_hit))
+
+        if pid_target.value and pid_target.value == pid_hit.value:
+            return True, ""
+
+        return False, f"Point ({abs_x}, {abs_y}) is obscured by another window (HWND {hit_hwnd} vs target {target_hwnd})"
+
+    except Exception as e:
+        return False, f"WindowFromPoint check failed with exception: {e}"
+
