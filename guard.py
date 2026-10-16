@@ -73,7 +73,8 @@ def init_dpi_awareness() -> None:
 
 def ensure_default_desktop() -> bool:
     """
-    Ensure the current thread is attached to the interactive 'default' desktop.
+    Ensure the current thread is attached to an interactive desktop.
+    Preserves the thread's active desktop if already valid, otherwise attaches to 'default'.
     MUST be called inside EVERY thread that registers hotkeys, displays UI,
     or interacts with windows.
     """
@@ -81,6 +82,14 @@ def ensure_default_desktop() -> bool:
         return True
     try:
         user32 = ctypes.windll.user32
+        tid = ctypes.windll.kernel32.GetCurrentThreadId()
+        curr_desk = user32.GetThreadDesktop(tid)
+        if curr_desk:
+            buf = ctypes.create_unicode_buffer(256)
+            if user32.GetUserObjectInformationW(curr_desk, 2, buf, 256, None):
+                if buf.value.lower() == "default":
+                    return True
+
         hdesk = user32.OpenDesktopW("default", 0, False, 0x1FF)
         if hdesk:
             return bool(user32.SetThreadDesktop(hdesk))

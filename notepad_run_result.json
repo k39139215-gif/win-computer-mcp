@@ -1,0 +1,48 @@
+{
+  "target_file": "C:\\Users\\kartik\\agent-workspace\\numbers.txt",
+  "steps": {
+    "1_launch_or_detect_notepad": {
+      "duration_seconds": 2.9812,
+      "duration_ms": 2981.22,
+      "window_title": "*1 - Notepad"
+    },
+    "2_focus_notepad": {
+      "duration_seconds": 0.4051,
+      "duration_ms": 405.12,
+      "status": "success"
+    },
+    "3_write_numbers_1_to_10": {
+      "duration_seconds": 2.324,
+      "duration_ms": 2323.96,
+      "lines_written": 10,
+      "characters": 21
+    },
+    "4_invoke_save_as_dialog": {
+      "duration_seconds": 3.1296,
+      "duration_ms": 3129.56
+    },
+    "5_set_destination_and_save": {
+      "duration_seconds": 5.9356,
+      "duration_ms": 5935.56,
+      "target_path": "C:\\Users\\kartik\\agent-workspace\\numbers.txt"
+    },
+    "6_verify_file_on_disk": {
+      "duration_seconds": 0.4043,
+      "duration_ms": 404.34,
+      "verified": true,
+      "file_size_bytes": 31
+    },
+    "7_capture_screenshot": {
+      "duration_seconds": 0.1206,
+      "duration_ms": 120.58,
+      "screenshot_path": null
+    }
+  },
+  "success": true,
+  "total_duration_seconds": 15.3075,
+  "total_duration_ms": 15307.45,
+  "total_duration_formatted": "15.307s (15307 ms)",
+  "wall_clock_start": "2026-10-16 22:56:14",
+  "wall_clock_end": "2026-10-16 22:56:29",
+  "file_content": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+}

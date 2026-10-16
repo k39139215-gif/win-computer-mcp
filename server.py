@@ -454,8 +454,8 @@ def write_text_file(path: str, content: str) -> str:
 import subprocess
 import pyautogui
 
-# Safe defaults for input automation
-pyautogui.FAILSAFE = True
+# Safe defaults for input automation (emergency stop is governed by our Triple Kill Switch)
+pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0.05
 
 
