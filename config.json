@@ -1,26 +1,19 @@
 {
   "allowed_apps": [
-    "calc.exe",
-    "calculatorapp.exe",
-    "notepad.exe"
+    "*"
   ],
   "blocked_apps": [
     "1password.exe",
     "bitwarden.exe",
-    "brave.exe",
-    "chrome.exe",
-    "firefox.exe",
     "keepass.exe",
-    "msedge.exe",
-    "mstsc.exe",
-    "systemsettings.exe"
+    "mstsc.exe"
   ],
   "allowed_dirs": [
-    "C:\\Users\\kartik\\agent-workspace"
+    "C:\\Users\\kartik"
   ],
   "rate_limits": {
-    "max_actions_per_minute": 30,
-    "max_actions_per_task": 100
+    "max_actions_per_minute": 120,
+    "max_actions_per_task": 500
   },
-  "auto_approve_low_risk": false
+  "auto_approve_low_risk": true
 }

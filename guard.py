@@ -311,6 +311,9 @@ def is_app_allowed(process_name: str) -> Tuple[bool, str]:
     if pname in blocked_apps:
         return False, f"Access denied: Process '{pname}' is explicitly blocked"
 
+    if "*" in allowed_apps or "all" in allowed_apps:
+        return True, ""
+
     if pname not in allowed_apps:
         return False, f"Access denied: Process '{pname}' is not in allowed_apps"
 
@@ -597,6 +600,9 @@ def validate_app_launch(app_name: str) -> Tuple[bool, str, str]:
     candidate_names = [base]
     if not base.endswith(".exe"):
         candidate_names.append(f"{base}.exe")
+
+    if "*" in allowed_apps or "all" in allowed_apps:
+        return True, "", candidate_names[0]
 
     for cand in candidate_names:
         if cand in allowed_apps:

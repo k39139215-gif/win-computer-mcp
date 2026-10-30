@@ -1,5 +1,12 @@
 __pycache__/
-*.pyc
+*.py[cod]
 audit.log
 rate_limits.json
 STOP
+*.bak*
+test_note.txt
+test_scratch.txt
+notepad_run_result.json
+.pytest_cache/
+.venv/
+venv/
