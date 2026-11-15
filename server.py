@@ -618,6 +618,52 @@ def focus_window(window_title: str) -> Dict[str, Any]:
     return {"status": "success", "focused": win.window_text(), "hwnd": hwnd}
 
 
+@mcp.tool()
+def focus_multiple_apps(app_names: List[str], delay_seconds: float = 0.3) -> Dict[str, Any]:
+    """
+    Rapidly cycle focus through multiple applications on the desktop in sequence.
+    Automatically restores/unminimizes any minimized windows.
+    
+    Args:
+        app_names: List of application names, titles, aliases, or HWNDs to focus sequentially.
+        delay_seconds: Pause between switches so user/display can register (default 0.3s).
+    """
+    guard.ensure_default_desktop()
+    results = []
+    t_start = time.perf_counter()
+
+    for name in app_names:
+        t0 = time.perf_counter()
+        win, proc, rect, hwnd = _find_target_window(name)
+        if not win or not hwnd:
+            results.append({
+                "target": name,
+                "status": "error",
+                "message": f"Window '{name}' not found"
+            })
+            continue
+
+        _focus_hwnd(hwnd)
+        dt = round((time.perf_counter() - t0) * 1000, 1)
+        results.append({
+            "target": name,
+            "status": "success",
+            "focused": win.window_text(),
+            "process": proc,
+            "hwnd": hwnd,
+            "duration_ms": dt
+        })
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    total_duration = round((time.perf_counter() - t_start) * 1000, 1)
+    return {
+        "status": "success" if any(r["status"] == "success" for r in results) else "error",
+        "total_duration_ms": total_duration,
+        "results": results
+    }
+
+
 SEMANTIC_ALIASES: Dict[str, List[str]] = {
     "browser": ["chrome", "msedge", "firefox", "brave", "opera", "arc", "vivaldi"],
     "web": ["chrome", "msedge", "firefox", "brave", "opera", "arc"],
@@ -1155,6 +1201,149 @@ def browser_close() -> Dict[str, Any]:
     """Close the active browser session and release memory."""
     BrowserManager.get().close()
     return {"status": "success", "message": "Browser session closed"}
+
+
+@mcp.tool()
+def browser_new_tab(url: str = "about:blank", wait_until: str = "commit") -> Dict[str, Any]:
+    """
+    Open a brand new tab in the active browser session and navigate to a URL.
+    Sets the new tab as the active working page.
+    """
+    mgr = BrowserManager.get()
+    try:
+        mgr.ensure_page()
+        t0 = time.perf_counter()
+        new_page = mgr.context.new_page()
+        mgr.page = new_page
+        if url and url != "about:blank":
+            new_page.goto(url, wait_until=wait_until, timeout=12000)
+        dt = round((time.perf_counter() - t0) * 1000, 1)
+        tab_idx = mgr.context.pages.index(new_page)
+        return {
+            "status": "success",
+            "tab_index": tab_idx,
+            "url": new_page.url,
+            "title": new_page.title(),
+            "duration_ms": dt,
+            "total_tabs": len(mgr.context.pages)
+        }
+    except Exception as e:
+        return {"error": f"Failed to open new tab: {e}"}
+
+
+@mcp.tool()
+def browser_list_tabs() -> List[Dict[str, Any]]:
+    """List all currently open tabs in the active browser session."""
+    mgr = BrowserManager.get()
+    if not mgr.context or not mgr.context.pages:
+        return []
+    tabs = []
+    for idx, page in enumerate(mgr.context.pages):
+        is_active = (page == mgr.page)
+        try:
+            tabs.append({
+                "index": idx,
+                "title": page.title(),
+                "url": page.url,
+                "is_active": is_active
+            })
+        except Exception:
+            pass
+    return tabs
+
+
+@mcp.tool()
+def browser_switch_tab(tab_index: int) -> Dict[str, Any]:
+    """Switch active focus to a specific tab by its index."""
+    mgr = BrowserManager.get()
+    if not mgr.context or not mgr.context.pages:
+        return {"error": "No browser session open"}
+    pages = mgr.context.pages
+    if tab_index < 0 or tab_index >= len(pages):
+        return {"error": f"Invalid tab index {tab_index}. Valid indices: 0 to {len(pages)-1}"}
+    try:
+        target_page = pages[tab_index]
+        target_page.bring_to_front()
+        mgr.page = target_page
+        return {
+            "status": "success",
+            "active_tab": tab_index,
+            "title": target_page.title(),
+            "url": target_page.url
+        }
+    except Exception as e:
+        return {"error": f"Failed to switch tab: {e}"}
+
+
+@mcp.tool()
+def browser_close_tab(tab_index: Optional[int] = None) -> Dict[str, Any]:
+    """Close a specific tab (or active tab if tab_index is None)."""
+    mgr = BrowserManager.get()
+    if not mgr.context or not mgr.context.pages:
+        return {"error": "No browser session open"}
+    pages = mgr.context.pages
+    idx = tab_index if tab_index is not None else (pages.index(mgr.page) if mgr.page in pages else 0)
+    if idx < 0 or idx >= len(pages):
+        return {"error": f"Invalid tab index {idx}"}
+    try:
+        page_to_close = pages[idx]
+        page_to_close.close()
+        remaining = mgr.context.pages
+        mgr.page = remaining[-1] if remaining else None
+        return {
+            "status": "success",
+            "closed_tab": idx,
+            "remaining_tabs": len(remaining)
+        }
+    except Exception as e:
+        return {"error": f"Failed to close tab: {e}"}
+
+
+@mcp.tool()
+def browser_load_multiple(urls: List[str], wait_until: str = "commit") -> Dict[str, Any]:
+    """
+    Rapidly load multiple websites across tabs in the browser engine.
+    Uses 'commit' wait strategy for lightning fast (~150ms per site) page loading.
+    
+    Args:
+        urls: List of web URLs to load (e.g. ['https://google.com', 'https://github.com']).
+        wait_until: Navigation readiness ('commit', 'domcontentloaded', 'load').
+    """
+    mgr = BrowserManager.get()
+    mgr.ensure_page()
+    results = []
+    t_start = time.perf_counter()
+
+    for i, url in enumerate(urls):
+        t0 = time.perf_counter()
+        try:
+            page = mgr.context.new_page() if i > 0 or (mgr.page and mgr.page.url != "about:blank") else mgr.page
+            page.goto(url, wait_until=wait_until, timeout=12000)
+            dt = round((time.perf_counter() - t0) * 1000, 1)
+            results.append({
+                "url": url,
+                "title": page.title(),
+                "status": "success",
+                "load_ms": dt
+            })
+            mgr.page = page
+        except Exception as e:
+            dt = round((time.perf_counter() - t0) * 1000, 1)
+            results.append({
+                "url": url,
+                "error": str(e),
+                "status": "error",
+                "load_ms": dt
+            })
+
+    total_duration = round((time.perf_counter() - t_start) * 1000, 1)
+    return {
+        "status": "success",
+        "total_sites": len(urls),
+        "total_duration_ms": total_duration,
+        "total_open_tabs": len(mgr.context.pages),
+        "sites": results
+    }
 
 
 # ==============================================================================

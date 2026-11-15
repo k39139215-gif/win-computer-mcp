@@ -77,6 +77,11 @@ flowchart TD
 * `browser_batch`: Run multiple browser steps in one single turn (goto, click, fill, press, wait, scroll, eval, extract).
 * `browser_snapshot`: Instant (<15ms) structured extraction of all interactive elements & CSS selectors.
 * `browser_eval`: Execute arbitrary JavaScript directly inside the active web page.
+* `browser_load_multiple`: Rapidly load multiple websites across browser tabs with lightning fast 'commit' strategy.
+* `browser_new_tab`: Open a new tab in the active browser session.
+* `browser_list_tabs`: List all open tabs with URLs, titles, and active status.
+* `browser_switch_tab`: Switch active tab focus by index in <5ms.
+* `browser_close_tab`: Close a specific tab or active tab.
 * `browser_press_key`: Keyboard key presses inside the browser (`Enter`, `Tab`, `Escape`, `ArrowDown`).
 * `browser_scroll`: Smooth browser scrolling (`up`, `down`, `top`, `bottom`).
 * `browser_open`: Open or attach to browser (isolated sandbox or personal Chrome profile/CDP) with `wait_until` option.
@@ -89,14 +94,15 @@ flowchart TD
 * `browser_close`: Clean session shutdown and resource cleanup.
 
 ### Desktop OS Control
+* `focus_multiple_apps`: Rapidly cycle focus through multiple desktop applications in sequence.
+* `focus_window`: Brings targeted window to foreground in <5ms.
+* `list_windows`: Lists all top-level windows in <2ms.
 * `screenshot`: Capture full desktop or specific window handle via DWM.
 * `mouse_click`: Click relative to targeted window coordinates (instant Win32 resolution).
 * `type_text`: Keyboard keystrokes with clipboard paste acceleration for long text.
 * `press_key`: Single key press (`enter`, `tab`, `esc`).
 * `hotkey`: Key combinations (`Ctrl+C`, `Alt+Tab`, `Win+R`, etc.).
 * `launch_app`: Launches Win32 / UWP apps instantly via Start Menu resolution.
-* `focus_window`: Brings targeted window to foreground in <5ms.
-* `list_windows`: Lists all top-level windows in <2ms.
 
 ---
 
