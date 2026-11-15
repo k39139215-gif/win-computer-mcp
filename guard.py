@@ -41,8 +41,15 @@ SENSITIVE_KEYS = {
 _KILL_SWITCH_FLAG: bool = False
 _HOTKEY_THREAD: Optional[threading.Thread] = None
 
-# Rate limit tracking lock
+# Rate limit tracking lock & memory cache
 _RATE_LIMIT_LOCK = threading.Lock()
+_MEM_TIMESTAMPS: Optional[List[float]] = None
+_MEM_TASK_COUNT: int = 0
+_LAST_RATE_SAVE: float = 0.0
+
+# Config file in-memory cache
+_CONFIG_CACHE: Optional[Dict[str, Any]] = None
+_CONFIG_CACHE_MTIME: float = 0.0
 
 
 class GuardError(Exception):
@@ -108,10 +115,18 @@ def load_config() -> Dict[str, Any]:
     Load and validate configuration from config.json.
     FAIL CLOSED: If missing, corrupt, unparseable, or invalid, returns empty config
     that causes all authorization checks to deny.
+    Fast path: Uses mtime-based in-memory cache to avoid disk reads on every tool call.
     """
+    global _CONFIG_CACHE, _CONFIG_CACHE_MTIME
     if not CONFIG_PATH.exists():
+        _CONFIG_CACHE = None
+        _CONFIG_CACHE_MTIME = 0.0
         return {}
     try:
+        mtime = CONFIG_PATH.stat().st_mtime
+        if _CONFIG_CACHE is not None and mtime == _CONFIG_CACHE_MTIME:
+            return _CONFIG_CACHE
+
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = json.load(f)
 
@@ -132,6 +147,9 @@ def load_config() -> Dict[str, Any]:
             "max_actions_per_task": int(cfg.get("rate_limits", {}).get("max_actions_per_task", 100)),
         }
         normalized["auto_approve_low_risk"] = bool(cfg.get("auto_approve_low_risk", False))
+        
+        _CONFIG_CACHE = normalized
+        _CONFIG_CACHE_MTIME = mtime
         return normalized
     except Exception as e:
         sys.stderr.write(f"Guard config load failure (fail-closed): {e}\n")
@@ -413,26 +431,42 @@ def check_path_allowed(target_path: str | Path) -> Tuple[bool, str]:
 # -------------------------------------------------------------------------
 
 def _load_rate_limits_state() -> Tuple[List[float], int]:
-    """Load persistent rate limit timestamps and counter from disk."""
+    """Load persistent rate limit timestamps and counter, with in-memory fast caching."""
+    global _MEM_TIMESTAMPS, _MEM_TASK_COUNT
+    if _MEM_TIMESTAMPS is not None:
+        return _MEM_TIMESTAMPS, _MEM_TASK_COUNT
     if not RATE_LIMITS_FILE.exists():
+        _MEM_TIMESTAMPS = []
+        _MEM_TASK_COUNT = 0
         return [], 0
     try:
         data = json.loads(RATE_LIMITS_FILE.read_text(encoding="utf-8"))
-        return data.get("minute_timestamps", []), data.get("task_action_count", 0)
+        _MEM_TIMESTAMPS = data.get("minute_timestamps", [])
+        _MEM_TASK_COUNT = data.get("task_action_count", 0)
+        return _MEM_TIMESTAMPS, _MEM_TASK_COUNT
     except Exception:
+        _MEM_TIMESTAMPS = []
+        _MEM_TASK_COUNT = 0
         return [], 0
 
 
 def _save_rate_limits_state(timestamps: List[float], task_count: int) -> None:
-    """Save persistent rate limit state to disk."""
-    try:
-        payload = {
-            "minute_timestamps": timestamps,
-            "task_action_count": task_count,
-        }
-        RATE_LIMITS_FILE.write_text(json.dumps(payload), encoding="utf-8")
-    except Exception:
-        pass
+    """Save rate limit state to memory and throttle disk writes to avoid tool latency."""
+    global _MEM_TIMESTAMPS, _MEM_TASK_COUNT, _LAST_RATE_SAVE
+    _MEM_TIMESTAMPS = timestamps
+    _MEM_TASK_COUNT = task_count
+    now = time.time()
+    # Throttled flush to disk (at most once every 3s) so synchronous disk I/O doesn't slow down tools
+    if now - _LAST_RATE_SAVE >= 3.0:
+        _LAST_RATE_SAVE = now
+        try:
+            payload = {
+                "minute_timestamps": timestamps,
+                "task_action_count": task_count,
+            }
+            RATE_LIMITS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def check_rate_limit() -> Tuple[bool, str]:
@@ -467,7 +501,11 @@ def check_rate_limit() -> Tuple[bool, str]:
 
 def reset_rate_limits() -> None:
     """Reset persistent and in-memory rate limiting counters."""
+    global _MEM_TIMESTAMPS, _MEM_TASK_COUNT, _LAST_RATE_SAVE
     with _RATE_LIMIT_LOCK:
+        _MEM_TIMESTAMPS = []
+        _MEM_TASK_COUNT = 0
+        _LAST_RATE_SAVE = time.time()
         if RATE_LIMITS_FILE.exists():
             try:
                 RATE_LIMITS_FILE.unlink()
