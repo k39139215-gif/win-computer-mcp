@@ -76,12 +76,13 @@ def _get_window_list_fast() -> List[FastWindow]:
         if win32gui.IsWindowVisible(hwnd):
             title = win32gui.GetWindowText(hwnd).strip()
             if title:
+                is_min = bool(ctypes.windll.user32.IsIconic(hwnd))
                 rect = win32gui.GetWindowRect(hwnd)
                 w = rect[2] - rect[0]
                 h = rect[3] - rect[1]
-                if w > 0 and h > 0:
+                if (w > 0 and h > 0) or is_min:
                     proc = guard.resolve_real_process(hwnd)
-                    windows.append(FastWindow(hwnd, title, proc, FastRect(rect[0], rect[1], w, h)))
+                    windows.append(FastWindow(hwnd, title, proc, FastRect(rect[0], rect[1], max(w, 0), max(h, 0))))
         return True
     win32gui.EnumWindows(enum_cb, None)
     return windows
