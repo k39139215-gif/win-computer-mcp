@@ -53,10 +53,12 @@ class FastRect:
         return self._height
 
 class FastWindow:
-    def __init__(self, hwnd: int, title: str, proc: str, rect: FastRect):
+    def __init__(self, hwnd: int, title: str, proc: str, class_name: str, rect: FastRect):
         self.handle = hwnd
         self._title = title
         self.process = proc
+        self.process_stem = proc[:-4] if proc.lower().endswith(".exe") else proc
+        self.class_name = class_name
         self._rect = rect
     def window_text(self) -> str:
         return self._title
@@ -82,7 +84,8 @@ def _get_window_list_fast() -> List[FastWindow]:
                 h = rect[3] - rect[1]
                 if (w > 0 and h > 0) or is_min:
                     proc = guard.resolve_real_process(hwnd)
-                    windows.append(FastWindow(hwnd, title, proc, FastRect(rect[0], rect[1], max(w, 0), max(h, 0))))
+                    cls_name = win32gui.GetClassName(hwnd)
+                    windows.append(FastWindow(hwnd, title, proc, cls_name, FastRect(rect[0], rect[1], max(w, 0), max(h, 0))))
         return True
     win32gui.EnumWindows(enum_cb, None)
     return windows
@@ -194,26 +197,59 @@ def _get_start_menu_apps() -> Dict[str, str]:
     return apps
 
 
+_APP_PATHS_CACHE: Dict[str, str] = {}
+_APP_PATHS_TIMESTAMP: float = 0.0
+
+def _get_registered_app_paths() -> Dict[str, str]:
+    """Index Windows App Paths registry keys across HKLM and HKCU in <10ms."""
+    global _APP_PATHS_CACHE, _APP_PATHS_TIMESTAMP
+    now = time.time()
+    if _APP_PATHS_CACHE and (now - _APP_PATHS_TIMESTAMP < 300):
+        return _APP_PATHS_CACHE
+    import winreg
+    paths = {}
+    for root in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+        try:
+            with winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths") as key:
+                num_subkeys = winreg.QueryInfoKey(key)[0]
+                for i in range(num_subkeys):
+                    try:
+                        sub = winreg.EnumKey(key, i)
+                        with winreg.OpenKey(key, sub) as sk:
+                            val = winreg.QueryValue(sk, "")
+                            if val and os.path.exists(val):
+                                s_lower = sub.lower()
+                                paths[s_lower] = val
+                                if s_lower.endswith(".exe"):
+                                    paths[s_lower[:-4]] = val
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    _APP_PATHS_CACHE = paths
+    _APP_PATHS_TIMESTAMP = now
+    return paths
+
+
 def _resolve_and_launch_app(app_name: str) -> Tuple[bool, str, int]:
     """
-    Instantly resolve an app name against running windows or Start Menu shortcuts.
-    Avoids slow directory crawling. Returns (success, message, pid).
+    Universally resolve an app name without specific .exe limitations:
+    1. Running windows (universal fuzzy, title, class, aliases)
+    2. Start Menu shortcuts
+    3. Windows App Paths registry (Brave, Photoshop, Steam, Blender, etc.)
+    4. ShellExecute (UWP apps, system tools, protocols)
+    5. Direct executable spawn
     """
     clean = (app_name or "").strip().lower()
     guard.ensure_default_desktop()
 
-    # 1. Check if matching window is already running and bring to front (<1ms)
-    for w in _get_window_list_fast():
-        try:
-            title = w.window_text().lower()
-            proc = w.process.lower()
-            if clean in title or clean in proc:
-                _focus_hwnd(w.handle)
-                return True, f"Window '{w.window_text()}' already running and brought to front", w.process_id()
-        except Exception:
-            continue
+    # 1. Check if matching window is already running using universal matcher (<1ms)
+    win, proc, rect, hwnd = _find_target_window(clean)
+    if win and hwnd:
+        _focus_hwnd(hwnd)
+        return True, f"Window '{win.window_text()}' already running and brought to front", win.process_id()
 
-    # 2. Check in-memory Start Menu index (<1ms memory lookup)
+    # 2. Check in-memory Start Menu index (<1ms)
     apps = _get_start_menu_apps()
     matched_target = None
     if clean in apps:
@@ -231,7 +267,26 @@ def _resolve_and_launch_app(app_name: str) -> Tuple[bool, str, int]:
         except Exception:
             pass
 
-    # 3. Fallback to ShellExecute (e.g. calc, notepad, mspaint, explorer)
+    # 3. Check Windows App Paths Registry (<1ms)
+    app_paths = _get_registered_app_paths()
+    if clean in app_paths:
+        try:
+            os.startfile(app_paths[clean])
+            return True, f"Launched '{app_name}' via App Paths registry: {app_paths[clean]}", 0
+        except Exception:
+            pass
+    else:
+        reg_candidates = [k for k in app_paths if clean in k]
+        if reg_candidates:
+            reg_candidates.sort(key=len)
+            best_reg = app_paths[reg_candidates[0]]
+            try:
+                os.startfile(best_reg)
+                return True, f"Launched '{app_name}' via App Paths: {best_reg}", 0
+            except Exception:
+                pass
+
+    # 4. Fallback to ShellExecute (e.g. calc, notepad, mspaint, explorer, ms-settings:)
     try:
         ret = ctypes.windll.shell32.ShellExecuteW(None, "open", clean, None, None, 1)
         if ret > 32:
@@ -239,7 +294,7 @@ def _resolve_and_launch_app(app_name: str) -> Tuple[bool, str, int]:
     except Exception:
         pass
 
-    # 4. Fallback to direct executable spawn
+    # 5. Fallback to direct executable spawn
     try:
         exe_name = clean if clean.endswith(".exe") else f"{clean}.exe"
         proc = subprocess.Popen([exe_name], shell=False)
@@ -563,11 +618,94 @@ def focus_window(window_title: str) -> Dict[str, Any]:
     return {"status": "success", "focused": win.window_text(), "hwnd": hwnd}
 
 
+SEMANTIC_ALIASES: Dict[str, List[str]] = {
+    "browser": ["chrome", "msedge", "firefox", "brave", "opera", "arc", "vivaldi"],
+    "web": ["chrome", "msedge", "firefox", "brave", "opera", "arc"],
+    "files": ["explorer", "cabinetwclass", "file explorer"],
+    "folder": ["explorer", "cabinetwclass", "file explorer"],
+    "calc": ["calculatorapp", "calc", "calculator"],
+    "calculator": ["calculatorapp", "calc", "calculator"],
+    "terminal": ["windowsterminal", "powershell", "cmd", "conhost", "wt"],
+    "cmd": ["cmd", "command prompt", "conhost"],
+    "powershell": ["powershell", "pwsh"],
+    "editor": ["code", "notepad", "sublime_text", "devenv"],
+    "notes": ["notepad", "notepad++"],
+    "chat": ["telegram", "whatsapp", "slack", "discord", "teams"],
+    "music": ["spotify", "vlc", "wmplayer"],
+    "yt": ["youtube", "msedge", "chrome"]
+}
+
+
 def _find_target_window(window_title: str):
-    target_lower = window_title.lower()
-    for win in _get_window_list_fast():
-        if target_lower in win.window_text().lower() or target_lower in win.process.lower():
-            return win, win.process, win.rectangle(), win.handle
+    """
+    Universal Window Resolution Engine:
+    Never restricted to specific .exe filenames. Matches dynamically across:
+      1. Direct HWND (decimal or 0x hex)
+      2. Exact title, process name, process stem, or Win32 window class
+      3. Substring matching across title, process, and class
+      4. Multi-word token intersection (e.g. 'edge youtube', 'figma community')
+      5. Universal semantic aliases (e.g. 'browser', 'folder', 'terminal', 'notes')
+      6. Fuzzy similarity ratio matching (difflib)
+    """
+    clean = (window_title or "").strip().lower()
+    if not clean:
+        return None, None, None, None
+
+    windows = _get_window_list_fast()
+    if not windows:
+        return None, None, None, None
+
+    # Tier 1: Direct HWND integer or hex match
+    if clean.isdigit() or (clean.startswith("0x") and all(c in "0123456789abcdef" for c in clean[2:])):
+        target_hwnd = int(clean, 16 if clean.startswith("0x") else 10)
+        for w in windows:
+            if w.handle == target_hwnd:
+                return w, w.process, w.rectangle(), w.handle
+
+    # Tier 2: Exact match on title, full process, stem without .exe, or class name
+    for w in windows:
+        if clean in (w.window_text().lower(), w.process.lower(), w.process_stem.lower(), w.class_name.lower()):
+            return w, w.process, w.rectangle(), w.handle
+
+    # Tier 3: Substring match across title, process, stem, or class name
+    for w in windows:
+        if (clean in w.window_text().lower() or 
+            clean in w.process.lower() or 
+            clean in w.process_stem.lower() or 
+            clean in w.class_name.lower()):
+            return w, w.process, w.rectangle(), w.handle
+
+    # Tier 4: Multi-word token intersection
+    tokens = [t for t in clean.split() if len(t) > 1]
+    if len(tokens) > 1:
+        for w in windows:
+            combined = f"{w.window_text()} {w.process} {w.class_name}".lower()
+            if all(t in combined for t in tokens):
+                return w, w.process, w.rectangle(), w.handle
+
+    # Tier 5: Universal semantic aliases & nicknames
+    for alias_key, alias_targets in SEMANTIC_ALIASES.items():
+        if clean == alias_key or clean in alias_key:
+            for w in windows:
+                combined = f"{w.window_text()} {w.process} {w.class_name}".lower()
+                if any(tgt in combined for tgt in alias_targets):
+                    return w, w.process, w.rectangle(), w.handle
+
+    # Tier 6: Fuzzy ratio matching (difflib)
+    import difflib
+    best_w = None
+    best_score = 0.0
+    for w in windows:
+        s1 = difflib.SequenceMatcher(None, clean, w.window_text().lower()).ratio()
+        s2 = difflib.SequenceMatcher(None, clean, w.process_stem.lower()).ratio()
+        score = max(s1, s2)
+        if score > best_score:
+            best_score = score
+            best_w = w
+
+    if best_score >= 0.55 and best_w:
+        return best_w, best_w.process, best_w.rectangle(), best_w.handle
+
     return None, None, None, None
 
 
