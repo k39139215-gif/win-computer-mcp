@@ -1,0 +1,54 @@
+# Windows Computer Use & Browser FastMCP Server (Full Technical Reference)
+
+## 1. System Overview
+The Windows Computer Use MCP Server bridges frontier LLMs (Claude 3.5 Sonnet, GPT-4o, Cursor AI) directly to the Windows 10 & 11 operating system via FastMCP (stdio).
+
+It eliminates the critical failures of traditional desktop RPA:
+1. **Zero Occlusion Bugs**: Uses Windows Desktop Window Manager (DWM) GPU buffer capture via `PrintWindow` with `PW_RENDERFULLCONTENT` (0x00000002). Minimized or overlapping windows are captured with pixel-perfect fidelity without black boxes.
+2. **Sub-40ms Application Resolver**: Replaces slow Windows shell queries by reading shell link shortcuts directly from `AppData\Roaming\Microsoft\Windows\Start Menu\Programs` and `ProgramData\Microsoft\Windows\Start Menu\Programs` with fuzzy string distance matching.
+3. **Compound Multi-Action Browser Batching**: Instead of round-tripping between the LLM and the browser for every single click, `browser_batch` accepts a sequence of actions (`navigate`, `click`, `fill`, `press_key`, `eval`) and executes them synchronously in <100ms.
+
+## 2. Security & Guardrails Architecture
+All tool calls pass through `guard.py` before execution:
+- **Rate Limiting**: Configurable token bucket preventing rapid-fire runaway loops.
+- **Action Blocklists**: Restricts critical system destruction commands (e.g., formatting drives, tampering with Windows system files).
+- **Audit Logging**: Appends all executed tool requests, timestamps, parameters, and statuses into `audit.log`.
+
+## 3. Cursor AI Configuration
+In `.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "win-computer-mcp": {
+      "command": "python",
+      "args": ["C:/Users/kartik/.gemini/antigravity/scratch/win-computer-mcp/server.py"]
+    }
+  }
+}
+```
+
+## 4. Claude Desktop Configuration
+In `%APPDATA%\Claude\claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "win-computer-mcp": {
+      "command": "python",
+      "args": ["C:/Users/kartik/.gemini/antigravity/scratch/win-computer-mcp/server.py"]
+    }
+  }
+}
+```
+
+## 5. Tool Reference Specification
+- `screenshot`: Captures desktop or specific window. Returns base64 PNG or local file URI.
+- `launch_app`: Resolves application by name and executes it via `ShellExecuteW`.
+- `list_windows`: Returns array of `{ hwnd, title, class, process_id, is_minimized, rect }`.
+- `focus_window`: Brings target window to foreground and attaches thread input.
+- `mouse_click`: Dispatches mouse button events via Win32 `mouse_event`.
+- `type_text`: Dispatches character input via `SendInput`.
+- `hotkey`: Dispatches combination key chords.
+- `browser_open`: Launches Chromium session via Playwright CDP.
+- `browser_navigate`: Navigates to destination URL.
+- `browser_snapshot`: Returns indexed JSON array of interactive DOM elements.
+- `browser_batch`: Executes atomic sequence of browser actions.

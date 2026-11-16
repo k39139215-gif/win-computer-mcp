@@ -108,7 +108,13 @@ flowchart TD
 
 ## 🚀 Installation & Configuration
 
-### Connect to Antigravity / Claude Desktop:
+### ⚡ 1-Click Install via Smithery
+Install directly into Cursor AI with a single command:
+```bash
+npx -y @smithery/cli install win-computer-mcp --client cursor
+```
+
+### Manual Configuration (Cursor AI / Claude Desktop / Antigravity)
 
 Add to your `mcp_servers` configuration:
 
@@ -122,6 +128,32 @@ Add to your `mcp_servers` configuration:
   }
 }
 ```
+
+---
+
+## ⭐ Star History
+
+If you find Windows Computer Use MCP helpful for your AI agents and workflows, please consider giving it a star!
+
+<p align="center">
+  <a href="https://star-history.com/#k39139215-gif/win-computer-mcp&Date">
+    <img src="https://api.star-history.com/svg?repos=k39139215-gif/win-computer-mcp&type=Date" alt="Star History Chart" width="100%"/>
+  </a>
+</p>
+
+<!-- Schema.org Structured Metadata for AI Search & Answer Engines -->
+<!--
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Windows Computer Use & Browser FastMCP Server",
+  "operatingSystem": "Windows 10, Windows 11",
+  "applicationCategory": "DeveloperApplication",
+  "description": "Windows Computer Use and Browser FastMCP Server providing occlusion-proof DWM GPU window capture, 40ms Start Menu app resolver, and Playwright desktop control.",
+  "softwareVersion": "1.0.0",
+  "codeRepository": "https://github.com/k39139215-gif/win-computer-mcp"
+}
+-->
 
 ---
 

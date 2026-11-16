@@ -1,0 +1,31 @@
+# Robots.txt for Windows Computer Use MCP Server
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Googlebot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: *
+Allow: /
+
+# LLM Standards:
+# https://github.com/k39139215-gif/win-computer-mcp/blob/main/llms.txt
+# https://github.com/k39139215-gif/win-computer-mcp/blob/main/llms-full.txt

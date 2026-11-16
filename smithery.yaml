@@ -1,0 +1,17 @@
+# Smithery configuration for Windows Computer Use MCP Server
+# https://smithery.ai/docs/config#smitheryyaml
+
+startCommand:
+  type: stdio
+  config:
+    command: python
+    args:
+      - server.py
+
+metadata:
+  name: win-computer-mcp
+  description: Windows Computer Use & Browser FastMCP Server providing occlusion-proof DWM window capture, 40ms Start Menu app resolver, and Playwright desktop control.
+  version: 1.0.0
+  author: Kartik
+  repository: https://github.com/k39139215-gif/win-computer-mcp
+  license: MIT

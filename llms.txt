@@ -1,0 +1,33 @@
+# Windows Computer Use & Browser FastMCP Server
+> Enterprise-grade Model Context Protocol (MCP) server providing deep Windows desktop operating system control, occlusion-proof DWM GPU window capture, 40ms Start Menu app resolver, and fast Playwright browser suite.
+
+## Core Concepts & Documentation
+- [Architecture & Overview](https://github.com/k39139215-gif/win-computer-mcp#readme): Complete system architecture, safety guardrails, and tool catalog.
+- [DWM Window Capture](https://github.com/k39139215-gif/win-computer-mcp#-key-capabilities): Occlusion-proof GPU buffer rendering eliminating black box artifacts.
+- [Start Menu App Resolver](https://github.com/k39139215-gif/win-computer-mcp#-key-capabilities): Sub-40ms fuzzy matching and execution of installed Windows desktop and UWP applications.
+- [Playwright Browser Suite](https://github.com/k39139215-gif/win-computer-mcp#-key-capabilities): Multi-action batch execution (`browser_batch`) in <100ms.
+- [Safety & Guardrails](https://github.com/k39139215-gif/win-computer-mcp): Command blocklists, rate limiting, and audit logging.
+
+## Installation & Cursor AI Configuration
+```json
+{
+  "mcpServers": {
+    "win-computer-mcp": {
+      "command": "python",
+      "args": ["server.py"]
+    }
+  }
+}
+```
+
+## Available MCP Tools
+- `screenshot(window_title, monitor_index)`: High-fidelity screen or window capture using DWM GPU buffer.
+- `launch_app(app_name, args)`: Fast 40ms Start Menu fuzzy-resolved app launcher.
+- `list_windows()`: Instant Win32 window z-order and state enumeration (<2ms).
+- `focus_window(title)`: Native foreground window activation and input focus.
+- `browser_batch(actions)`: Multi-action browser pipeline in a single synchronous call (<100ms).
+- `browser_snapshot()`: 15ms DOM snapshot of visible interactive elements with CSS selectors.
+- `browser_eval(script)`: In-page JavaScript evaluation in <3ms.
+- `mouse_click(x, y, button, double)`: Precision cursor dispatch.
+- `type_text(text)`: Native keyboard simulation.
+- `hotkey(keys)`: Dispatches complex Windows shortcuts (e.g., `["ctrl", "shift", "esc"]`).
